@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-forge-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "forge-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "forge-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "forge-operator.selectorLabels" . | nindent 8 }}
+        {{- include "forge-operator.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "forge-operator.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --metrics-bind-address=:{{ .Values.metrics.port }}
+            - --health-probe-bind-address=:{{ .Values.probe.port }}
+            {{- if .Values.leaderElection }}
+            - --leader-elect=true
+            {{- end }}
+          env:
+            - name: FORGE_URL
+              value: {{ .Values.forge.url | quote }}
+            {{- if .Values.forge.hostHeader }}
+            - name: FORGE_HOST_HEADER
+              value: {{ .Values.forge.hostHeader | quote }}
+            {{- end }}
+            - name: FORGE_INSECURE
+              value: {{ .Values.forge.insecureSkipVerify | quote }}
+            - name: FORGE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "forge-operator.tokenSecretName" . }}
+                  key: token
+          ports:
+            - { name: metrics, containerPort: {{ .Values.metrics.port }} }
+            - { name: probe,   containerPort: {{ .Values.probe.port }} }
+          livenessProbe:
+            httpGet: { path: /healthz, port: probe }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /readyz, port: probe }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
