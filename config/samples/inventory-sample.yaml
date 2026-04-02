@@ -1,0 +1,42 @@
+apiVersion: forge.forgeplatform.io/v1alpha1
+kind: Inventory
+metadata:
+  name: production
+  namespace: default
+spec:
+  description: "Production inventory managed by forge-operator"
+  organization: Default
+  variables: |
+    ansible_user: deploy
+    ansible_connection: ssh
+  hosts:
+    - name: web-1.prod
+      enabled: true
+      variables: |
+        role: web
+        zone: eu-west-1a
+    - name: web-2.prod
+      enabled: true
+      variables: |
+        role: web
+        zone: eu-west-1b
+    - name: db-1.prod
+      enabled: true
+      variables: |
+        role: db
+        zone: eu-west-1a
+  groups:
+    - name: web
+      description: "Web tier"
+      hosts:
+        - web-1.prod
+        - web-2.prod
+    - name: db
+      description: "Database tier"
+      hosts:
+        - db-1.prod
+    - name: prod
+      description: "All prod hosts (parent of web + db)"
+      children:
+        - web
+        - db
