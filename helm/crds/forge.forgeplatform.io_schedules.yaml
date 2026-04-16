@@ -1,0 +1,96 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: schedules.forge.forgeplatform.io
+spec:
+  group: forge.forgeplatform.io
+  names:
+    kind: Schedule
+    listKind: ScheduleList
+    plural: schedules
+    singular: schedule
+    shortNames: [sch]
+    categories: [forge]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Forge ID
+          type: integer
+          jsonPath: .status.forgeId
+        - name: JobTemplate
+          type: string
+          jsonPath: .spec.jobTemplate
+        - name: Enabled
+          type: boolean
+          jsonPath: .spec.enabled
+        - name: Next Run
+          type: string
+          jsonPath: .status.nextRun
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [jobTemplate, rrule]
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                jobTemplate:
+                  type: string
+                rrule:
+                  type: string
+                enabled:
+                  type: boolean
+                  default: true
+                extraData:
+                  type: string
+            status:
+              type: object
+              properties:
+                forgeId:
+                  type: integer
+                  format: int64
+                jobTemplateId:
+                  type: integer
+                  format: int64
+                nextRun:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status, lastTransitionTime, reason]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
