@@ -8,7 +8,10 @@ spec:
   jobType: run
   inventory: Demo Inventory      # name as it appears in Forge UI
   project: Demo Project
-  playbook: site.yml
+  # hello_world.yml is the only playbook shipped with Demo Project; for
+  # real templates, set this to a path that actually exists in the
+  # configured project's repo (Forge validates it on JT create).
+  playbook: hello_world.yml
   forks: 5
   verbosity: 1
   extraVars: |
