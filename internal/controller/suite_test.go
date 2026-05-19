@@ -129,6 +129,12 @@ func newManager(t *testing.T, ctx context.Context, forgeURL, forgeToken string) 
 		Complete(&TeamReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc}); err != nil {
 		t.Fatalf("setup team: %v", err)
 	}
+	if err := ctrl.NewControllerManagedBy(mgr).
+		For(&forgev1.Workflow{}).
+		Named("workflow" + suffix).
+		Complete(&WorkflowReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc}); err != nil {
+		t.Fatalf("setup workflow: %v", err)
+	}
 
 	mgrCtx, cancel := context.WithCancel(ctx)
 	mgrDone := make(chan struct{})

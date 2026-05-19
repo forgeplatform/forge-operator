@@ -1,0 +1,26 @@
+apiVersion: forge.forgeplatform.io/v1alpha1
+kind: Workflow
+metadata:
+  name: provision-and-deploy
+  namespace: default
+spec:
+  description: "Provision EC2 + bake AMI + roll out app"
+  organization: Default
+  allowSimultaneous: false
+  askVariablesOnLaunch: true
+  nodes:
+    - identifier: provision
+      unifiedJobTemplate: Provision EC2          # name of a JobTemplate
+      successNodes: [bake-ami]
+      failureNodes: [notify-failure]
+    - identifier: bake-ami
+      unifiedJobTemplate: Bake AMI
+      successNodes: [deploy]
+      failureNodes: [notify-failure]
+    - identifier: deploy
+      unifiedJobTemplate: Deploy App
+      alwaysNodes: [notify-end]
+    - identifier: notify-failure
+      unifiedJobTemplate: Send Slack Alert
+    - identifier: notify-end
+      unifiedJobTemplate: Send Slack Alert

@@ -22,6 +22,7 @@ rules:
   - projects
   - schedules
   - teams
+  - workflows
   verbs:
   - create
   - delete
@@ -40,6 +41,7 @@ rules:
   - projects/finalizers
   - schedules/finalizers
   - teams/finalizers
+  - workflows/finalizers
   verbs:
   - update
 - apiGroups:
@@ -52,6 +54,7 @@ rules:
   - projects/status
   - schedules/status
   - teams/status
+  - workflows/status
   verbs:
   - get
   - patch

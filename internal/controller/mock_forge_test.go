@@ -39,6 +39,10 @@ type mockForge struct {
 	jtCreds      map[int64]map[int64]struct{} // jt ID -> set of credential IDs
 	schedules    map[int64]map[string]any
 
+	workflows     map[int64]map[string]any
+	workflowNodes map[int64]map[string]any           // node ID -> node
+	nodeEdges     map[int64]map[string]map[int64]struct{} // src -> edge -> set of target IDs
+
 	// Counters for assertions.
 	calls map[string]int
 }
@@ -61,6 +65,9 @@ func newMockForge() *mockForge {
 		jobTemplates:    map[int64]map[string]any{},
 		jtCreds:         map[int64]map[int64]struct{}{},
 		schedules:       map[int64]map[string]any{},
+		workflows:       map[int64]map[string]any{},
+		workflowNodes:   map[int64]map[string]any{},
+		nodeEdges:       map[int64]map[string]map[int64]struct{}{},
 		calls:           map[string]int{},
 	}
 	// Seed defaults.
@@ -395,6 +402,136 @@ func (m *mockForge) handle(w http.ResponseWriter, r *http.Request) {
 				} else {
 					m.calls["ASSOCIATE team user"]++
 					m.teamUsers[id][uid] = struct{}{}
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}
+		}
+
+	// --- workflows ---
+	case r.Method == "GET" && path == "/api/v2/workflow_job_templates/":
+		m.calls["GET workflows"]++
+		w.Write(listEnvelope(findByName(m.workflows, q)))
+	case r.Method == "POST" && path == "/api/v2/workflow_job_templates/":
+		m.calls["POST workflows"]++
+		var b map[string]any
+		json.NewDecoder(r.Body).Decode(&b)
+		id := m.nextID
+		m.nextID++
+		b["id"] = id
+		m.workflows[id] = b
+		writeJSON(w, http.StatusCreated, b)
+	case strings.HasPrefix(path, "/api/v2/workflow_job_templates/"):
+		id, tail := idFromPath(path, "/api/v2/workflow_job_templates/")
+		switch {
+		case tail == "/" || tail == "":
+			switch r.Method {
+			case "GET":
+				m.calls["GET workflow"]++
+				if v, ok := m.workflows[id]; ok {
+					writeJSON(w, http.StatusOK, v)
+				} else {
+					http.NotFound(w, r)
+				}
+			case "PATCH":
+				m.calls["PATCH workflow"]++
+				var b map[string]any
+				json.NewDecoder(r.Body).Decode(&b)
+				cur := m.workflows[id]
+				for k, v := range b {
+					cur[k] = v
+				}
+				writeJSON(w, http.StatusOK, cur)
+			case "DELETE":
+				m.calls["DELETE workflow"]++
+				delete(m.workflows, id)
+				// Cascade-delete nodes belonging to this workflow.
+				for nid, n := range m.workflowNodes {
+					if int64(n["workflow_job_template"].(float64)) == id {
+						delete(m.workflowNodes, nid)
+						delete(m.nodeEdges, nid)
+					}
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}
+		case strings.HasPrefix(tail, "/workflow_nodes/"):
+			switch r.Method {
+			case "GET":
+				m.calls["GET workflow nodes"]++
+				items := []map[string]any{}
+				for _, n := range m.workflowNodes {
+					if int64(n["workflow_job_template"].(float64)) == id {
+						items = append(items, n)
+					}
+				}
+				w.Write(listEnvelope(items))
+			case "POST":
+				m.calls["POST workflow node"]++
+				var b map[string]any
+				json.NewDecoder(r.Body).Decode(&b)
+				nid := m.nextID
+				m.nextID++
+				b["id"] = nid
+				b["workflow_job_template"] = float64(id)
+				m.workflowNodes[nid] = b
+				m.nodeEdges[nid] = map[string]map[int64]struct{}{
+					"success": {}, "failure": {}, "always": {},
+				}
+				writeJSON(w, http.StatusCreated, b)
+			}
+		}
+	case strings.HasPrefix(path, "/api/v2/workflow_job_template_nodes/"):
+		id, tail := idFromPath(path, "/api/v2/workflow_job_template_nodes/")
+		switch {
+		case tail == "/" || tail == "":
+			switch r.Method {
+			case "PATCH":
+				m.calls["PATCH workflow node"]++
+				var b map[string]any
+				json.NewDecoder(r.Body).Decode(&b)
+				cur := m.workflowNodes[id]
+				for k, v := range b {
+					cur[k] = v
+				}
+				writeJSON(w, http.StatusOK, cur)
+			case "DELETE":
+				m.calls["DELETE workflow node"]++
+				delete(m.workflowNodes, id)
+				delete(m.nodeEdges, id)
+				w.WriteHeader(http.StatusNoContent)
+			}
+		default:
+			// /success_nodes/, /failure_nodes/, /always_nodes/
+			var edge string
+			switch {
+			case strings.HasPrefix(tail, "/success_nodes/"):
+				edge = "success"
+			case strings.HasPrefix(tail, "/failure_nodes/"):
+				edge = "failure"
+			case strings.HasPrefix(tail, "/always_nodes/"):
+				edge = "always"
+			}
+			if edge == "" {
+				http.NotFound(w, r)
+				return
+			}
+			switch r.Method {
+			case "GET":
+				m.calls["GET workflow edges"]++
+				items := []map[string]any{}
+				for tid := range m.nodeEdges[id][edge] {
+					items = append(items, map[string]any{"id": tid})
+				}
+				w.Write(listEnvelope(items))
+			case "POST":
+				var b map[string]any
+				json.NewDecoder(r.Body).Decode(&b)
+				tid := int64(b["id"].(float64))
+				if d, ok := b["disassociate"]; ok && d.(bool) {
+					m.calls["DISASSOCIATE workflow edge"]++
+					delete(m.nodeEdges[id][edge], tid)
+				} else {
+					m.calls["ASSOCIATE workflow edge"]++
+					m.nodeEdges[id][edge][tid] = struct{}{}
 				}
 				w.WriteHeader(http.StatusNoContent)
 			}
