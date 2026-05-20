@@ -16,6 +16,7 @@ rules:
   - forge.forgeplatform.io
   resources:
   - credentials
+  - forgeinstances
   - inventories
   - jobtemplates
   - organizations
@@ -48,6 +49,7 @@ rules:
   - forge.forgeplatform.io
   resources:
   - credentials/status
+  - forgeinstances/status
   - inventories/status
   - jobtemplates/status
   - organizations/status

@@ -22,7 +22,12 @@ const projectFinalizer = "project.forge.forgeplatform.io/finalizer"
 type ProjectReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	Forge  *forgeapi.Client
+	// Forge is the default client (global FORGE_URL/TOKEN). Used when
+	// spec.forgeInstance is empty.
+	Forge *forgeapi.Client
+	// Pool dispenses per-ForgeInstance clients for multi-cluster CRs.
+	// Nil pool falls back to Forge.
+	Pool *forgeapi.ClientPool
 }
 
 // +kubebuilder:rbac:groups=forge.forgeplatform.io,resources=projects,verbs=get;list;watch;create;update;patch;delete
@@ -52,25 +57,30 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	desired, err := r.buildDesired(ctx, &cr)
+	fc, err := clientFor(ctx, r.Pool, r.Forge, cr.Namespace, cr.Spec.ForgeInstance)
+	if err != nil {
+		return r.markProjectErr(ctx, &cr, reasonResolveErr, fmt.Errorf("forge instance: %w", err))
+	}
+
+	desired, err := r.buildDesired(ctx, fc, &cr)
 	if err != nil {
 		return r.markProjectErr(ctx, &cr, reasonResolveErr, err)
 	}
 
-	current, err := r.findExisting(ctx, &cr, desired.Name)
+	current, err := r.findExisting(ctx, fc, &cr, desired.Name)
 	if err != nil {
 		return r.markProjectErr(ctx, &cr, reasonAPIError, err)
 	}
 
 	if current == nil {
-		created, err := r.Forge.CreateProject(ctx, desired)
+		created, err := fc.CreateProject(ctx, desired)
 		if err != nil {
 			return r.markProjectErr(ctx, &cr, reasonAPIError, fmt.Errorf("create: %w", err))
 		}
 		logger.Info("created Project in Forge", "id", created.ID, "name", created.Name)
 		current = created
 	} else if !equalProject(current, desired) {
-		updated, err := r.Forge.UpdateProject(ctx, current.ID, desired)
+		updated, err := fc.UpdateProject(ctx, current.ID, desired)
 		if err != nil {
 			return r.markProjectErr(ctx, &cr, reasonAPIError, fmt.Errorf("update: %w", err))
 		}
@@ -93,7 +103,11 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *ProjectReconciler) reconcileDelete(ctx context.Context, cr *forgev1.Project) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	if cr.Status.ForgeID > 0 {
-		if err := r.Forge.DeleteProject(ctx, cr.Status.ForgeID); err != nil && !forgeapi.IsNotFound(err) {
+		fc, ferr := clientFor(ctx, r.Pool, r.Forge, cr.Namespace, cr.Spec.ForgeInstance)
+		if ferr != nil {
+			return ctrl.Result{}, fmt.Errorf("resolve forge instance for delete: %w", ferr)
+		}
+		if err := fc.DeleteProject(ctx, cr.Status.ForgeID); err != nil && !forgeapi.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("delete forge Project %d: %w", cr.Status.ForgeID, err)
 		}
 		logger.Info("deleted Project from Forge", "id", cr.Status.ForgeID)
@@ -102,13 +116,13 @@ func (r *ProjectReconciler) reconcileDelete(ctx context.Context, cr *forgev1.Pro
 	return ctrl.Result{}, r.Update(ctx, cr)
 }
 
-func (r *ProjectReconciler) buildDesired(ctx context.Context, cr *forgev1.Project) (*forgeapi.Project, error) {
+func (r *ProjectReconciler) buildDesired(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Project) (*forgeapi.Project, error) {
 	name := cr.Spec.Name
 	if name == "" {
 		name = cr.Name
 	}
 
-	orgID, err := r.Forge.ResolveOrganization(ctx, cr.Spec.Organization)
+	orgID, err := fc.ResolveOrganization(ctx, cr.Spec.Organization)
 	if err != nil {
 		return nil, fmt.Errorf("resolve organization %q: %w", cr.Spec.Organization, err)
 	}
@@ -141,7 +155,7 @@ func (r *ProjectReconciler) buildDesired(ctx context.Context, cr *forgev1.Projec
 	}
 
 	if cr.Spec.ScmCredential != "" {
-		credID, err := r.Forge.ResolveCredential(ctx, cr.Spec.ScmCredential)
+		credID, err := fc.ResolveCredential(ctx, cr.Spec.ScmCredential)
 		if err != nil {
 			return nil, fmt.Errorf("resolve credential %q: %w", cr.Spec.ScmCredential, err)
 		}
@@ -152,7 +166,7 @@ func (r *ProjectReconciler) buildDesired(ctx context.Context, cr *forgev1.Projec
 	}
 
 	if cr.Spec.DefaultEnvironment != "" {
-		eeID, err := r.Forge.ResolveExecutionEnvironment(ctx, cr.Spec.DefaultEnvironment)
+		eeID, err := fc.ResolveExecutionEnvironment(ctx, cr.Spec.DefaultEnvironment)
 		if err != nil {
 			return nil, fmt.Errorf("resolve execution_environment %q: %w", cr.Spec.DefaultEnvironment, err)
 		}
@@ -165,9 +179,9 @@ func (r *ProjectReconciler) buildDesired(ctx context.Context, cr *forgev1.Projec
 	return p, nil
 }
 
-func (r *ProjectReconciler) findExisting(ctx context.Context, cr *forgev1.Project, name string) (*forgeapi.Project, error) {
+func (r *ProjectReconciler) findExisting(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Project, name string) (*forgeapi.Project, error) {
 	if cr.Status.ForgeID > 0 {
-		p, err := r.Forge.GetProject(ctx, cr.Status.ForgeID)
+		p, err := fc.GetProject(ctx, cr.Status.ForgeID)
 		if err == nil {
 			return p, nil
 		}
@@ -175,7 +189,7 @@ func (r *ProjectReconciler) findExisting(ctx context.Context, cr *forgev1.Projec
 			return nil, err
 		}
 	}
-	return r.Forge.FindProjectByName(ctx, name)
+	return fc.FindProjectByName(ctx, name)
 }
 
 func (r *ProjectReconciler) markProjectErr(ctx context.Context, cr *forgev1.Project, reason string, err error) (ctrl.Result, error) {

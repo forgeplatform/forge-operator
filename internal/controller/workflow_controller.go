@@ -31,6 +31,7 @@ type WorkflowReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Forge  *forgeapi.Client
+	Pool   *forgeapi.ClientPool
 }
 
 // +kubebuilder:rbac:groups=forge.forgeplatform.io,resources=workflows,verbs=get;list;watch;create;update;patch;delete
@@ -60,26 +61,31 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	fc, err := clientFor(ctx, r.Pool, r.Forge, cr.Namespace, cr.Spec.ForgeInstance)
+	if err != nil {
+		return r.markWorkflowErr(ctx, &cr, reasonResolveErr, fmt.Errorf("forge instance: %w", err))
+	}
+
 	// --- Phase 1: workflow shell ---
-	desired, err := r.buildDesiredShell(ctx, &cr)
+	desired, err := r.buildDesiredShell(ctx, fc, &cr)
 	if err != nil {
 		return r.markWorkflowErr(ctx, &cr, reasonResolveErr, err)
 	}
 
-	current, err := r.findExistingShell(ctx, &cr, desired.Name)
+	current, err := r.findExistingShell(ctx, fc, &cr, desired.Name)
 	if err != nil {
 		return r.markWorkflowErr(ctx, &cr, reasonAPIError, err)
 	}
 
 	if current == nil {
-		created, err := r.Forge.CreateWorkflow(ctx, desired)
+		created, err := fc.CreateWorkflow(ctx, desired)
 		if err != nil {
 			return r.markWorkflowErr(ctx, &cr, reasonAPIError, fmt.Errorf("create: %w", err))
 		}
 		logger.Info("created Workflow in Forge", "id", created.ID, "name", created.Name)
 		current = created
 	} else if !equalWorkflow(current, desired) {
-		updated, err := r.Forge.UpdateWorkflow(ctx, current.ID, desired)
+		updated, err := fc.UpdateWorkflow(ctx, current.ID, desired)
 		if err != nil {
 			return r.markWorkflowErr(ctx, &cr, reasonAPIError, fmt.Errorf("update: %w", err))
 		}
@@ -88,13 +94,13 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// --- Phase 2: nodes ---
-	idByIdentifier, err := r.syncNodes(ctx, &cr, current.ID)
+	idByIdentifier, err := r.syncNodes(ctx, fc, &cr, current.ID)
 	if err != nil {
 		return r.markWorkflowErr(ctx, &cr, reasonAPIError, fmt.Errorf("nodes: %w", err))
 	}
 
 	// --- Phase 3: edges ---
-	if err := r.syncEdges(ctx, &cr, idByIdentifier); err != nil {
+	if err := r.syncEdges(ctx, fc, &cr, idByIdentifier); err != nil {
 		return r.markWorkflowErr(ctx, &cr, reasonAPIError, fmt.Errorf("edges: %w", err))
 	}
 
@@ -114,7 +120,11 @@ func (r *WorkflowReconciler) reconcileDelete(ctx context.Context, cr *forgev1.Wo
 	// Forge cascades nodes when the parent workflow is deleted, so a single
 	// DELETE on /workflow_job_templates/{id}/ is enough.
 	if cr.Status.ForgeID > 0 {
-		if err := r.Forge.DeleteWorkflow(ctx, cr.Status.ForgeID); err != nil && !forgeapi.IsNotFound(err) {
+		fc, ferr := clientFor(ctx, r.Pool, r.Forge, cr.Namespace, cr.Spec.ForgeInstance)
+		if ferr != nil {
+			return ctrl.Result{}, fmt.Errorf("resolve forge instance for delete: %w", ferr)
+		}
+		if err := fc.DeleteWorkflow(ctx, cr.Status.ForgeID); err != nil && !forgeapi.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("delete forge Workflow %d: %w", cr.Status.ForgeID, err)
 		}
 		logger.Info("deleted Workflow from Forge", "id", cr.Status.ForgeID)
@@ -123,13 +133,13 @@ func (r *WorkflowReconciler) reconcileDelete(ctx context.Context, cr *forgev1.Wo
 	return ctrl.Result{}, r.Update(ctx, cr)
 }
 
-func (r *WorkflowReconciler) buildDesiredShell(ctx context.Context, cr *forgev1.Workflow) (*forgeapi.Workflow, error) {
+func (r *WorkflowReconciler) buildDesiredShell(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Workflow) (*forgeapi.Workflow, error) {
 	name := cr.Spec.Name
 	if name == "" {
 		name = cr.Name
 	}
 
-	orgID, err := r.Forge.ResolveOrganization(ctx, cr.Spec.Organization)
+	orgID, err := fc.ResolveOrganization(ctx, cr.Spec.Organization)
 	if err != nil {
 		return nil, fmt.Errorf("resolve organization %q: %w", cr.Spec.Organization, err)
 	}
@@ -149,7 +159,7 @@ func (r *WorkflowReconciler) buildDesiredShell(ctx context.Context, cr *forgev1.
 	}
 
 	if cr.Spec.Inventory != "" {
-		invID, err := r.Forge.ResolveInventory(ctx, cr.Spec.Inventory)
+		invID, err := fc.ResolveInventory(ctx, cr.Spec.Inventory)
 		if err != nil {
 			return nil, fmt.Errorf("resolve inventory %q: %w", cr.Spec.Inventory, err)
 		}
@@ -161,9 +171,9 @@ func (r *WorkflowReconciler) buildDesiredShell(ctx context.Context, cr *forgev1.
 	return w, nil
 }
 
-func (r *WorkflowReconciler) findExistingShell(ctx context.Context, cr *forgev1.Workflow, name string) (*forgeapi.Workflow, error) {
+func (r *WorkflowReconciler) findExistingShell(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Workflow, name string) (*forgeapi.Workflow, error) {
 	if cr.Status.ForgeID > 0 {
-		w, err := r.Forge.GetWorkflow(ctx, cr.Status.ForgeID)
+		w, err := fc.GetWorkflow(ctx, cr.Status.ForgeID)
 		if err == nil {
 			return w, nil
 		}
@@ -171,13 +181,13 @@ func (r *WorkflowReconciler) findExistingShell(ctx context.Context, cr *forgev1.
 			return nil, err
 		}
 	}
-	return r.Forge.FindWorkflowByName(ctx, name)
+	return fc.FindWorkflowByName(ctx, name)
 }
 
 // syncNodes brings the Forge node set into agreement with cr.Spec.Nodes,
 // returning a map of {identifier -> Forge node ID} usable for edge sync.
-func (r *WorkflowReconciler) syncNodes(ctx context.Context, cr *forgev1.Workflow, workflowID int64) (map[string]int64, error) {
-	currentNodes, err := r.Forge.ListWorkflowNodes(ctx, workflowID)
+func (r *WorkflowReconciler) syncNodes(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Workflow, workflowID int64) (map[string]int64, error) {
+	currentNodes, err := fc.ListWorkflowNodes(ctx, workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -196,7 +206,7 @@ func (r *WorkflowReconciler) syncNodes(ctx context.Context, cr *forgev1.Workflow
 
 	// Add or update.
 	for ident, dn := range desiredByID {
-		ujtID, err := r.resolveUnifiedJobTemplate(ctx, dn)
+		ujtID, err := r.resolveUnifiedJobTemplate(ctx, fc, dn)
 		if err != nil {
 			return nil, err
 		}
@@ -207,7 +217,7 @@ func (r *WorkflowReconciler) syncNodes(ctx context.Context, cr *forgev1.Workflow
 		}
 		if cur, ok := currentByID[ident]; ok {
 			if cur.UnifiedJobTemplate != ujtID || cur.ExtraData != dn.ExtraData {
-				updated, err := r.Forge.UpdateWorkflowNode(ctx, cur.ID, wantNode)
+				updated, err := fc.UpdateWorkflowNode(ctx, cur.ID, wantNode)
 				if err != nil {
 					return nil, fmt.Errorf("update node %q: %w", ident, err)
 				}
@@ -216,7 +226,7 @@ func (r *WorkflowReconciler) syncNodes(ctx context.Context, cr *forgev1.Workflow
 				idByIdentifier[ident] = cur.ID
 			}
 		} else {
-			created, err := r.Forge.CreateWorkflowNode(ctx, workflowID, wantNode)
+			created, err := fc.CreateWorkflowNode(ctx, workflowID, wantNode)
 			if err != nil {
 				return nil, fmt.Errorf("create node %q: %w", ident, err)
 			}
@@ -227,7 +237,7 @@ func (r *WorkflowReconciler) syncNodes(ctx context.Context, cr *forgev1.Workflow
 	// Delete removed.
 	for ident, cur := range currentByID {
 		if _, ok := desiredByID[ident]; !ok {
-			if err := r.Forge.DeleteWorkflowNode(ctx, cur.ID); err != nil {
+			if err := fc.DeleteWorkflowNode(ctx, cur.ID); err != nil {
 				return nil, fmt.Errorf("delete node %q: %w", ident, err)
 			}
 		}
@@ -235,14 +245,14 @@ func (r *WorkflowReconciler) syncNodes(ctx context.Context, cr *forgev1.Workflow
 	return idByIdentifier, nil
 }
 
-func (r *WorkflowReconciler) resolveUnifiedJobTemplate(ctx context.Context, n *forgev1.WorkflowNode) (int64, error) {
+func (r *WorkflowReconciler) resolveUnifiedJobTemplate(ctx context.Context, fc *forgeapi.Client, n *forgev1.WorkflowNode) (int64, error) {
 	kind := n.UnifiedJobTemplateKind
 	if kind == "" {
 		kind = "job_template"
 	}
 	switch kind {
 	case "job_template":
-		id, err := r.Forge.ResolveJobTemplate(ctx, n.UnifiedJobTemplate)
+		id, err := fc.ResolveJobTemplate(ctx, n.UnifiedJobTemplate)
 		if err != nil {
 			return 0, fmt.Errorf("resolve job_template %q: %w", n.UnifiedJobTemplate, err)
 		}
@@ -251,7 +261,7 @@ func (r *WorkflowReconciler) resolveUnifiedJobTemplate(ctx context.Context, n *f
 		}
 		return id, nil
 	case "workflow_job_template":
-		id, err := r.Forge.ResolveWorkflow(ctx, n.UnifiedJobTemplate)
+		id, err := fc.ResolveWorkflow(ctx, n.UnifiedJobTemplate)
 		if err != nil {
 			return 0, fmt.Errorf("resolve workflow %q: %w", n.UnifiedJobTemplate, err)
 		}
@@ -264,7 +274,7 @@ func (r *WorkflowReconciler) resolveUnifiedJobTemplate(ctx context.Context, n *f
 	}
 }
 
-func (r *WorkflowReconciler) syncEdges(ctx context.Context, cr *forgev1.Workflow, idByIdentifier map[string]int64) error {
+func (r *WorkflowReconciler) syncEdges(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Workflow, idByIdentifier map[string]int64) error {
 	for i := range cr.Spec.Nodes {
 		n := &cr.Spec.Nodes[i]
 		srcID, ok := idByIdentifier[n.Identifier]
@@ -279,7 +289,7 @@ func (r *WorkflowReconciler) syncEdges(ctx context.Context, cr *forgev1.Workflow
 			{"failure", n.FailureNodes},
 			{"always", n.AlwaysNodes},
 		} {
-			if err := r.syncOneEdge(ctx, srcID, edge.name, edge.targets, idByIdentifier); err != nil {
+			if err := r.syncOneEdge(ctx, fc, srcID, edge.name, edge.targets, idByIdentifier); err != nil {
 				return fmt.Errorf("node %q edge %s: %w", n.Identifier, edge.name, err)
 			}
 		}
@@ -287,7 +297,7 @@ func (r *WorkflowReconciler) syncEdges(ctx context.Context, cr *forgev1.Workflow
 	return nil
 }
 
-func (r *WorkflowReconciler) syncOneEdge(ctx context.Context, srcID int64, edge string, targets []string, idByIdentifier map[string]int64) error {
+func (r *WorkflowReconciler) syncOneEdge(ctx context.Context, fc *forgeapi.Client, srcID int64, edge string, targets []string, idByIdentifier map[string]int64) error {
 	desired := map[int64]struct{}{}
 	for _, ident := range targets {
 		id, ok := idByIdentifier[ident]
@@ -296,7 +306,7 @@ func (r *WorkflowReconciler) syncOneEdge(ctx context.Context, srcID int64, edge 
 		}
 		desired[id] = struct{}{}
 	}
-	currentIDs, err := r.Forge.ListNodeEdges(ctx, srcID, edge)
+	currentIDs, err := fc.ListNodeEdges(ctx, srcID, edge)
 	if err != nil {
 		return err
 	}
@@ -306,14 +316,14 @@ func (r *WorkflowReconciler) syncOneEdge(ctx context.Context, srcID int64, edge 
 	}
 	for id := range desired {
 		if _, ok := current[id]; !ok {
-			if err := r.Forge.AssociateNodeEdge(ctx, srcID, edge, id); err != nil {
+			if err := fc.AssociateNodeEdge(ctx, srcID, edge, id); err != nil {
 				return err
 			}
 		}
 	}
 	for id := range current {
 		if _, ok := desired[id]; !ok {
-			if err := r.Forge.DisassociateNodeEdge(ctx, srcID, edge, id); err != nil {
+			if err := fc.DisassociateNodeEdge(ctx, srcID, edge, id); err != nil {
 				return err
 			}
 		}

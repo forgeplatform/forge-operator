@@ -68,6 +68,16 @@ func main() {
 	}
 
 	forgeClient := forgeapi.New(forgeURL, forgeToken, forgeHostHeader, forgeInsecure)
+	pool := forgeapi.NewClientPool(forgeClient, mgr.GetClient())
+
+	if err := (&controller.ForgeInstanceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Pool:   pool,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up ForgeInstance controller")
+		os.Exit(1)
+	}
 
 	if err := (&controller.JobTemplateReconciler{
 		Client: mgr.GetClient(),
@@ -109,6 +119,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Forge:  forgeClient,
+		Pool:   pool,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up Project controller")
 		os.Exit(1)
@@ -118,6 +129,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Forge:  forgeClient,
+		Pool:   pool,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up Organization controller")
 		os.Exit(1)
@@ -127,6 +139,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Forge:  forgeClient,
+		Pool:   pool,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up Team controller")
 		os.Exit(1)
@@ -136,6 +149,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Forge:  forgeClient,
+		Pool:   pool,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up Workflow controller")
 		os.Exit(1)

@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: forge-eu-token
+  namespace: default
+type: Opaque
+stringData:
+  # Issue a PAT inside the target Forge:
+  #   forge-manage create_oauth2_token --user admin
+  token: PUT_THE_BEARER_TOKEN_HERE
+---
+apiVersion: forge.forgeplatform.io/v1alpha1
+kind: ForgeInstance
+metadata:
+  name: forge-eu
+  namespace: default
+spec:
+  url: https://forge-eu.example.com
+  hostHeader: forge-eu.example.com
+  insecureSkipVerify: false
+  tokenSecretRef:
+    name: forge-eu-token
+    key: token
+---
+# A Project CR pinned to the forge-eu instance.
+apiVersion: forge.forgeplatform.io/v1alpha1
+kind: Project
+metadata:
+  name: eu-platform-roles
+  namespace: default
+spec:
+  forgeInstance: forge-eu
+  organization: Default
+  scmType: git
+  scmUrl: https://github.com/mycorp/eu-platform-roles.git
+  scmBranch: main

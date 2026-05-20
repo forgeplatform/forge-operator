@@ -7,10 +7,10 @@ metadata:
     {{- include "forge-operator.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["forge.forgeplatform.io"]
-    resources: ["jobtemplates", "inventories", "credentials", "schedules", "projects", "organizations", "teams", "workflows"]
+    resources: ["jobtemplates", "inventories", "credentials", "schedules", "projects", "organizations", "teams", "workflows", "forgeinstances"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["forge.forgeplatform.io"]
-    resources: ["jobtemplates/status", "inventories/status", "credentials/status", "schedules/status", "projects/status", "organizations/status", "teams/status", "workflows/status"]
+    resources: ["jobtemplates/status", "inventories/status", "credentials/status", "schedules/status", "projects/status", "organizations/status", "teams/status", "workflows/status", "forgeinstances/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: ["forge.forgeplatform.io"]
     resources: ["jobtemplates/finalizers", "inventories/finalizers", "credentials/finalizers", "schedules/finalizers", "projects/finalizers", "organizations/finalizers", "teams/finalizers", "workflows/finalizers"]

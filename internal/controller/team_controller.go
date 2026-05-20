@@ -24,6 +24,7 @@ type TeamReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Forge  *forgeapi.Client
+	Pool   *forgeapi.ClientPool
 }
 
 // +kubebuilder:rbac:groups=forge.forgeplatform.io,resources=teams,verbs=get;list;watch;create;update;patch;delete
@@ -53,25 +54,30 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	desired, err := r.buildDesired(ctx, &cr)
+	fc, err := clientFor(ctx, r.Pool, r.Forge, cr.Namespace, cr.Spec.ForgeInstance)
+	if err != nil {
+		return r.markTeamErr(ctx, &cr, reasonResolveErr, fmt.Errorf("forge instance: %w", err))
+	}
+
+	desired, err := r.buildDesired(ctx, fc, &cr)
 	if err != nil {
 		return r.markTeamErr(ctx, &cr, reasonResolveErr, err)
 	}
 
-	current, err := r.findExisting(ctx, &cr, desired.Name)
+	current, err := r.findExisting(ctx, fc, &cr, desired.Name)
 	if err != nil {
 		return r.markTeamErr(ctx, &cr, reasonAPIError, err)
 	}
 
 	if current == nil {
-		created, err := r.Forge.CreateTeam(ctx, desired)
+		created, err := fc.CreateTeam(ctx, desired)
 		if err != nil {
 			return r.markTeamErr(ctx, &cr, reasonAPIError, fmt.Errorf("create: %w", err))
 		}
 		logger.Info("created Team in Forge", "id", created.ID, "name", created.Name)
 		current = created
 	} else if !equalTeam(current, desired) {
-		updated, err := r.Forge.UpdateTeam(ctx, current.ID, desired)
+		updated, err := fc.UpdateTeam(ctx, current.ID, desired)
 		if err != nil {
 			return r.markTeamErr(ctx, &cr, reasonAPIError, fmt.Errorf("update: %w", err))
 		}
@@ -79,7 +85,7 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		current = updated
 	}
 
-	if err := r.syncUsers(ctx, &cr, current.ID); err != nil {
+	if err := r.syncUsers(ctx, fc, &cr, current.ID); err != nil {
 		return r.markTeamErr(ctx, &cr, reasonAPIError, fmt.Errorf("users: %w", err))
 	}
 
@@ -96,7 +102,11 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 func (r *TeamReconciler) reconcileDelete(ctx context.Context, cr *forgev1.Team) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	if cr.Status.ForgeID > 0 {
-		if err := r.Forge.DeleteTeam(ctx, cr.Status.ForgeID); err != nil && !forgeapi.IsNotFound(err) {
+		fc, ferr := clientFor(ctx, r.Pool, r.Forge, cr.Namespace, cr.Spec.ForgeInstance)
+		if ferr != nil {
+			return ctrl.Result{}, fmt.Errorf("resolve forge instance for delete: %w", ferr)
+		}
+		if err := fc.DeleteTeam(ctx, cr.Status.ForgeID); err != nil && !forgeapi.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("delete forge Team %d: %w", cr.Status.ForgeID, err)
 		}
 		logger.Info("deleted Team from Forge", "id", cr.Status.ForgeID)
@@ -105,13 +115,13 @@ func (r *TeamReconciler) reconcileDelete(ctx context.Context, cr *forgev1.Team) 
 	return ctrl.Result{}, r.Update(ctx, cr)
 }
 
-func (r *TeamReconciler) buildDesired(ctx context.Context, cr *forgev1.Team) (*forgeapi.Team, error) {
+func (r *TeamReconciler) buildDesired(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Team) (*forgeapi.Team, error) {
 	name := cr.Spec.Name
 	if name == "" {
 		name = cr.Name
 	}
 
-	orgID, err := r.Forge.ResolveOrganization(ctx, cr.Spec.Organization)
+	orgID, err := fc.ResolveOrganization(ctx, cr.Spec.Organization)
 	if err != nil {
 		return nil, fmt.Errorf("resolve organization %q: %w", cr.Spec.Organization, err)
 	}
@@ -126,9 +136,9 @@ func (r *TeamReconciler) buildDesired(ctx context.Context, cr *forgev1.Team) (*f
 	}, nil
 }
 
-func (r *TeamReconciler) findExisting(ctx context.Context, cr *forgev1.Team, name string) (*forgeapi.Team, error) {
+func (r *TeamReconciler) findExisting(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Team, name string) (*forgeapi.Team, error) {
 	if cr.Status.ForgeID > 0 {
-		t, err := r.Forge.GetTeam(ctx, cr.Status.ForgeID)
+		t, err := fc.GetTeam(ctx, cr.Status.ForgeID)
 		if err == nil {
 			return t, nil
 		}
@@ -136,13 +146,13 @@ func (r *TeamReconciler) findExisting(ctx context.Context, cr *forgev1.Team, nam
 			return nil, err
 		}
 	}
-	return r.Forge.FindTeamByName(ctx, name)
+	return fc.FindTeamByName(ctx, name)
 }
 
-func (r *TeamReconciler) syncUsers(ctx context.Context, cr *forgev1.Team, teamID int64) error {
+func (r *TeamReconciler) syncUsers(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Team, teamID int64) error {
 	desired := map[int64]struct{}{}
 	for _, username := range cr.Spec.Users {
-		uid, err := r.Forge.ResolveUser(ctx, username)
+		uid, err := fc.ResolveUser(ctx, username)
 		if err != nil {
 			return fmt.Errorf("resolve user %q: %w", username, err)
 		}
@@ -152,7 +162,7 @@ func (r *TeamReconciler) syncUsers(ctx context.Context, cr *forgev1.Team, teamID
 		desired[uid] = struct{}{}
 	}
 
-	currentIDs, err := r.Forge.ListTeamUsers(ctx, teamID)
+	currentIDs, err := fc.ListTeamUsers(ctx, teamID)
 	if err != nil {
 		return err
 	}
@@ -163,14 +173,14 @@ func (r *TeamReconciler) syncUsers(ctx context.Context, cr *forgev1.Team, teamID
 
 	for id := range desired {
 		if _, ok := current[id]; !ok {
-			if err := r.Forge.AssociateTeamUser(ctx, teamID, id); err != nil {
+			if err := fc.AssociateTeamUser(ctx, teamID, id); err != nil {
 				return fmt.Errorf("associate user %d: %w", id, err)
 			}
 		}
 	}
 	for id := range current {
 		if _, ok := desired[id]; !ok {
-			if err := r.Forge.DisassociateTeamUser(ctx, teamID, id); err != nil {
+			if err := fc.DisassociateTeamUser(ctx, teamID, id); err != nil {
 				return fmt.Errorf("disassociate user %d: %w", id, err)
 			}
 		}

@@ -84,6 +84,7 @@ func newManager(t *testing.T, ctx context.Context, forgeURL, forgeToken string) 
 		t.Fatalf("manager: %v", err)
 	}
 	fc := newTestForgeClient(forgeURL, forgeToken)
+	pool := newTestClientPool(fc, mgr.GetClient())
 
 	suffix := "-" + t.Name()
 
@@ -114,26 +115,32 @@ func newManager(t *testing.T, ctx context.Context, forgeURL, forgeToken string) 
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&forgev1.Project{}).
 		Named("project" + suffix).
-		Complete(&ProjectReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc}); err != nil {
+		Complete(&ProjectReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc, Pool: pool}); err != nil {
 		t.Fatalf("setup project: %v", err)
 	}
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&forgev1.Organization{}).
 		Named("organization" + suffix).
-		Complete(&OrganizationReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc}); err != nil {
+		Complete(&OrganizationReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc, Pool: pool}); err != nil {
 		t.Fatalf("setup organization: %v", err)
 	}
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&forgev1.Team{}).
 		Named("team" + suffix).
-		Complete(&TeamReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc}); err != nil {
+		Complete(&TeamReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc, Pool: pool}); err != nil {
 		t.Fatalf("setup team: %v", err)
 	}
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&forgev1.Workflow{}).
 		Named("workflow" + suffix).
-		Complete(&WorkflowReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc}); err != nil {
+		Complete(&WorkflowReconciler{Client: mgr.GetClient(), Scheme: scheme, Forge: fc, Pool: pool}); err != nil {
 		t.Fatalf("setup workflow: %v", err)
+	}
+	if err := ctrl.NewControllerManagedBy(mgr).
+		For(&forgev1.ForgeInstance{}).
+		Named("forgeinstance" + suffix).
+		Complete(&ForgeInstanceReconciler{Client: mgr.GetClient(), Scheme: scheme, Pool: pool}); err != nil {
+		t.Fatalf("setup forgeinstance: %v", err)
 	}
 
 	mgrCtx, cancel := context.WithCancel(ctx)

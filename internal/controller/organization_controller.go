@@ -23,6 +23,7 @@ type OrganizationReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Forge  *forgeapi.Client
+	Pool   *forgeapi.ClientPool
 }
 
 // +kubebuilder:rbac:groups=forge.forgeplatform.io,resources=organizations,verbs=get;list;watch;create;update;patch;delete
@@ -52,25 +53,30 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	desired, err := r.buildDesired(ctx, &cr)
+	fc, err := clientFor(ctx, r.Pool, r.Forge, cr.Namespace, cr.Spec.ForgeInstance)
+	if err != nil {
+		return r.markOrgErr(ctx, &cr, reasonResolveErr, fmt.Errorf("forge instance: %w", err))
+	}
+
+	desired, err := r.buildDesired(ctx, fc, &cr)
 	if err != nil {
 		return r.markOrgErr(ctx, &cr, reasonResolveErr, err)
 	}
 
-	current, err := r.findExisting(ctx, &cr, desired.Name)
+	current, err := r.findExisting(ctx, fc, &cr, desired.Name)
 	if err != nil {
 		return r.markOrgErr(ctx, &cr, reasonAPIError, err)
 	}
 
 	if current == nil {
-		created, err := r.Forge.CreateOrganization(ctx, desired)
+		created, err := fc.CreateOrganization(ctx, desired)
 		if err != nil {
 			return r.markOrgErr(ctx, &cr, reasonAPIError, fmt.Errorf("create: %w", err))
 		}
 		logger.Info("created Organization in Forge", "id", created.ID, "name", created.Name)
 		current = created
 	} else if !equalOrganization(current, desired) {
-		updated, err := r.Forge.UpdateOrganization(ctx, current.ID, desired)
+		updated, err := fc.UpdateOrganization(ctx, current.ID, desired)
 		if err != nil {
 			return r.markOrgErr(ctx, &cr, reasonAPIError, fmt.Errorf("update: %w", err))
 		}
@@ -91,7 +97,11 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, cr *forgev1.Organization) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	if cr.Status.ForgeID > 0 {
-		if err := r.Forge.DeleteOrganization(ctx, cr.Status.ForgeID); err != nil && !forgeapi.IsNotFound(err) {
+		fc, ferr := clientFor(ctx, r.Pool, r.Forge, cr.Namespace, cr.Spec.ForgeInstance)
+		if ferr != nil {
+			return ctrl.Result{}, fmt.Errorf("resolve forge instance for delete: %w", ferr)
+		}
+		if err := fc.DeleteOrganization(ctx, cr.Status.ForgeID); err != nil && !forgeapi.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("delete forge Organization %d: %w", cr.Status.ForgeID, err)
 		}
 		logger.Info("deleted Organization from Forge", "id", cr.Status.ForgeID)
@@ -100,7 +110,7 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, cr *forgev
 	return ctrl.Result{}, r.Update(ctx, cr)
 }
 
-func (r *OrganizationReconciler) buildDesired(ctx context.Context, cr *forgev1.Organization) (*forgeapi.Organization, error) {
+func (r *OrganizationReconciler) buildDesired(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Organization) (*forgeapi.Organization, error) {
 	name := cr.Spec.Name
 	if name == "" {
 		name = cr.Name
@@ -113,7 +123,7 @@ func (r *OrganizationReconciler) buildDesired(ctx context.Context, cr *forgev1.O
 	}
 
 	if cr.Spec.DefaultEnvironment != "" {
-		eeID, err := r.Forge.ResolveExecutionEnvironment(ctx, cr.Spec.DefaultEnvironment)
+		eeID, err := fc.ResolveExecutionEnvironment(ctx, cr.Spec.DefaultEnvironment)
 		if err != nil {
 			return nil, fmt.Errorf("resolve execution_environment %q: %w", cr.Spec.DefaultEnvironment, err)
 		}
@@ -125,9 +135,9 @@ func (r *OrganizationReconciler) buildDesired(ctx context.Context, cr *forgev1.O
 	return o, nil
 }
 
-func (r *OrganizationReconciler) findExisting(ctx context.Context, cr *forgev1.Organization, name string) (*forgeapi.Organization, error) {
+func (r *OrganizationReconciler) findExisting(ctx context.Context, fc *forgeapi.Client, cr *forgev1.Organization, name string) (*forgeapi.Organization, error) {
 	if cr.Status.ForgeID > 0 {
-		o, err := r.Forge.GetOrganization(ctx, cr.Status.ForgeID)
+		o, err := fc.GetOrganization(ctx, cr.Status.ForgeID)
 		if err == nil {
 			return o, nil
 		}
@@ -135,7 +145,7 @@ func (r *OrganizationReconciler) findExisting(ctx context.Context, cr *forgev1.O
 			return nil, err
 		}
 	}
-	return r.Forge.FindOrganizationByName(ctx, name)
+	return fc.FindOrganizationByName(ctx, name)
 }
 
 func (r *OrganizationReconciler) markOrgErr(ctx context.Context, cr *forgev1.Organization, reason string, err error) (ctrl.Result, error) {

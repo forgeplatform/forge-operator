@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"github.com/forgeplatform/forge-operator/internal/forgeapi"
 )
 
@@ -107,6 +109,13 @@ func newTestForgeClient(baseURL, token string) *forgeapi.Client {
 	return forgeapi.New(baseURL, token, "", true)
 }
 
+// newTestClientPool builds a ClientPool wrapping the default client and
+// the manager's k8s client (used to look up ForgeInstance CRs in tests
+// that exercise the multi-cluster path).
+func newTestClientPool(def *forgeapi.Client, k client.Client) *forgeapi.ClientPool {
+	return forgeapi.NewClientPool(def, k)
+}
+
 // listEnvelope produces the Forge `{count, results}` shape.
 func listEnvelope(items []map[string]any) []byte {
 	out := map[string]any{
@@ -164,6 +173,11 @@ func (m *mockForge) handle(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
 	switch {
+	// --- ping (health probe used by ForgeInstance) ---
+	case r.Method == "GET" && path == "/api/v2/ping/":
+		m.calls["GET ping"]++
+		writeJSON(w, http.StatusOK, map[string]any{"version": "2026.04.0", "install_uuid": "test"})
+
 	// --- name -> id resolvers (lists with name= filter) ---
 	case r.Method == "GET" && path == "/api/v2/organizations/":
 		m.calls["GET organizations"]++
