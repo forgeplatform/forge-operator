@@ -2,12 +2,12 @@
 
 # ── Image ─────────────────────────────────────────────────
 image:
-  repository: registry.cloudforyour.work/forge-platform/forge-operator
+  repository: ghcr.io/forgeplatform/forge-operator
   tag: "1.0.0"
   pullPolicy: IfNotPresent
 
-imagePullSecrets:
-  - name: harbor-pull
+# Public ghcr.io images do not require pull secrets.
+imagePullSecrets: []
 
 # ── Forge connection ─────────────────────────────────────
 forge:

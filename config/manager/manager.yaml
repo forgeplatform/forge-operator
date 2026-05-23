@@ -34,11 +34,9 @@ spec:
         app.kubernetes.io/name: forge-operator
     spec:
       serviceAccountName: forge-operator
-      imagePullSecrets:
-        - name: harbor-pull
       containers:
         - name: manager
-          image: registry.cloudforyour.work/forge-platform/forge-operator:0.1.0
+          image: ghcr.io/forgeplatform/forge-operator:1.0.0
           imagePullPolicy: IfNotPresent
           args:
             - --metrics-bind-address=:8080
